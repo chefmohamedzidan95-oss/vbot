@@ -36,7 +36,6 @@ class QfilmProvider(BaseProvider):
         Category(id="series_anime", name="🎨 مسلسلات أنمي", icon="🎨"),
     ]
 
-    # Keyword mapping for fallback category search
     CATEGORY_QUERIES = {
         "movies_arabic": ("عربي", "movies"),
         "movies_foreign": ("أجنبي", "movies"),
@@ -66,6 +65,7 @@ class QfilmProvider(BaseProvider):
             "Referer": self.DOMAINS["movies"],
         })
         self.timeout = self.config.get("request_timeout", 30)
+        self.player_base_url = self.config.get("player_web_app_url", "")
 
     @property
     def id(self) -> str:
@@ -108,7 +108,6 @@ class QfilmProvider(BaseProvider):
         return ""
 
     def search(self, query: str, page: int = 1) -> List[VideoResult]:
-        """Search movies and series domains across pages."""
         results: List[VideoResult] = []
         seen_vids = set()
 
@@ -133,7 +132,6 @@ class QfilmProvider(BaseProvider):
         return results
 
     def get_by_category(self, category_id: str, page: int = 1) -> List[VideoResult]:
-        """Fetch items in a category."""
         cat_info = self.CATEGORY_QUERIES.get(category_id)
         if cat_info:
             kw, domain_key = cat_info
@@ -152,8 +150,6 @@ class QfilmProvider(BaseProvider):
             except Exception as e:
                 logger.error(f"Category fetch failed for {category_id}: {e}")
                 return []
-        
-        # Fallback to general search
         return self.search(category_id, page=page)
 
     def _parse_grid(self, soup: BeautifulSoup, base_url: str) -> List[VideoResult]:
@@ -228,11 +224,10 @@ class QfilmProvider(BaseProvider):
     def get_video_details(self, vid: str, extra: Optional[dict] = None) -> VideoResult:
         base = self._resolve_base_url(vid, extra)
         watch_url = f"{base}/watch.php?vid={vid}"
-        
+
         try:
             html = self._get(watch_url).text
         except Exception:
-            # Try second domain if first fails
             base = self.DOMAINS["series"] if base == self.DOMAINS["movies"] else self.DOMAINS["movies"]
             watch_url = f"{base}/watch.php?vid={vid}"
             html = self._get(watch_url).text
@@ -265,7 +260,7 @@ class QfilmProvider(BaseProvider):
         video_data.is_series = self._check_is_series(soup, categories, title)
         if video_data.is_series:
             video_data.labels.append("مسلسل")
-        
+
         video_data.direct_links = self._get_direct_links(vid, base)
         return video_data
 
@@ -385,7 +380,6 @@ class QfilmProvider(BaseProvider):
         return False
 
     def get_series_episodes(self, series_url_or_vid: str) -> List[VideoResult]:
-        """Extract episodes from series page."""
         if series_url_or_vid.startswith("http"):
             watch_url = series_url_or_vid
             base = self.DOMAINS["series"] if "q-drama.com" in watch_url else self.DOMAINS["movies"]
@@ -519,10 +513,20 @@ class QfilmProvider(BaseProvider):
     def get_web_app_url(self, video: VideoResult) -> str:
         """
         Return the Web App URL for playback.
-        Uses play/embed URL or direct link.
+        If a custom web_app_player_url is configured and direct link exists,
+        it builds a custom player URL.
+        Otherwise falls back to play.php/embed.php player.
         """
         vid = video.vid
         base = self._resolve_base_url(vid, {"watch_url": video.watch_url})
-        
+
+        # Check if direct stream link is available and custom web app player is configured
+        if self.player_base_url and video.direct_links:
+            direct_stream = video.direct_links[0]["url"]
+            stream_enc = quote(direct_stream, safe='')
+            title_enc = quote(video.title or '', safe='')
+            thumb_enc = quote(video.thumb_url or '', safe='')
+            return f"{self.player_base_url}?stream={stream_enc}&title={title_enc}&thumb={thumb_enc}"
+
         # Default player embed URL for WebApp Info
         return f"{base}/play.php?vid={vid}"
